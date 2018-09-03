@@ -10,12 +10,15 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import net.haw.dlock.api.DlockOp;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.commons.lang.StringUtils;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooDefs;
+import org.apache.zookeeper.ZooDefs.Ids;
 import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.data.Stat;
 import org.springframework.beans.factory.InitializingBean;
@@ -30,6 +33,11 @@ import org.springframework.beans.factory.InitializingBean;
 public class ZkDlockOpImpl implements DlockOp, InitializingBean {
 
     /**
+     * Logger.
+     */
+    private static final Logger LOGGER = LoggerFactory.getLogger(ZkDlockOpImpl.class);
+
+    /**
      * 锁记录.
      */
     private final ConcurrentHashMap<String, String> LOCK_MAP = new ConcurrentHashMap();
@@ -42,12 +50,12 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
     /**
      * lock.
      */
-    private final String lockRootPath = "/lock/";
+    private final String lockRootPath = "/lock";
 
     /**
      * zk .
      */
-    private final String lockPath = "temp/";
+    private final String lockPath = "temp";
 
     /**
      * zk - host.
@@ -94,7 +102,7 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
                 return flag;
             }
 
-            key = zk.create(lockRootPath + lockPath + lockResource,
+            key = zk.create(lockRootPath + "/" + lockPath + "/" + lockResource + "_",
                     threadId.getBytes(),
                     ZooDefs.Ids.OPEN_ACL_UNSAFE,
                     CreateMode.EPHEMERAL_SEQUENTIAL);
@@ -116,7 +124,7 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
 
                     flag = this.tryLock(currenSeq, key);
                     if (!flag) {
-                        
+
                         if (timeWait < 0) {
                             return flag;
                         }
@@ -127,21 +135,22 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
                     return flag;
                 }
             }
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (final Exception e) {
+            LOGGER.error("lock error", e);
             return false;
         } finally {
             try {
                 if (!flag && StringUtils.isBlank(key)) {
                     zk.delete(key, 1);
                 }
-            } catch (Exception e) {
+            } catch (final Exception e) {
+                LOGGER.error("unlock error", e);
             }
         }
     }
 
     private boolean tryLock(final Long currenSeqv, final String key) throws KeeperException, InterruptedException {
-        final List<String> keys = zk.getChildren(lockRootPath + lockPath, false);
+        final List<String> keys = zk.getChildren(lockRootPath + "/" + lockPath, false);
         if (keys.size() == 1) {
             return true;
         }
@@ -159,7 +168,7 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
             }
             //或取列表中最小锁
             if (seq.get(i) < currenSeqv) {
-                zk.exists(lockRootPath + lockPath + "/key_000000000" + seq.get(i),
+                zk.exists(lockRootPath + "/" + lockPath + "/abc_000000000" + seq.get(i),
                         new WatcherImpl(zk, key));
                 return false;
             }
@@ -201,20 +210,24 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
     }
 
     @Override
-    public void afterPropertiesSet() throws Exception {
+    public void afterPropertiesSet() throws RuntimeException {
         try {
-            zk = new ZooKeeper("192.168.1.11", 5000, new Watcher() {
+            zk = new ZooKeeper(host, 5000, new Watcher() {
                 public void process(WatchedEvent we) {
-                    System.out.println("process");
                 }
             });
-            Stat stat = zk.exists(lockRootPath + lockPath, false);
+            Stat stat = zk.exists(lockRootPath, false);
             if (null == stat) {
-                zk.create(lockRootPath + lockPath, "".getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+                zk.create(lockRootPath, "lock".getBytes(), Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+            }
+            stat = zk.exists(lockRootPath + "/" + lockPath, false);
+            if (null == stat) {
+                zk.create(lockRootPath + "/" + lockPath, lockPath.getBytes(), Ids.OPEN_ACL_UNSAFE,
+                        CreateMode.PERSISTENT);
             }
             (new Thread(new ClearLock())).start();
         } catch (final Exception e) {
-            e.printStackTrace();
+            throw new RuntimeException("init lock impl error", e);
         }
     }
 
