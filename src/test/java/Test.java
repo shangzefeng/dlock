@@ -27,7 +27,8 @@ public class Test {
         zkDlockOpImpl.setTimeout(5000);
         zkDlockOpImpl.afterPropertiesSet();
         DlockHandlerImpl dlockHandlerImpl = new DlockHandlerImpl(zkDlockOpImpl);
-        if (dlockHandlerImpl.lock("abc", 10000)) {
+        if (dlockHandlerImpl.lock("abc", 1000000)) {
+            dlockHandlerImpl.unlock("abc");
             System.out.println("100");
         }
     }
