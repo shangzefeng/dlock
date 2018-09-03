@@ -5,16 +5,16 @@
  */
 package net.haw.dlock.impl.zk;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import net.haw.dlock.api.DlockOp;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.commons.lang.StringUtils;
 import org.apache.zookeeper.CreateMode;
-import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooDefs;
@@ -114,17 +114,14 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
             long startTime = System.currentTimeMillis();
             long endTime = System.currentTimeMillis();
             long timeWait = timeOut;
-            long totalWaitTime = 0;
 
+            String preLockKey = null;
             synchronized (key) {
                 while (true) {
-                    startTime = System.currentTimeMillis();
-                    totalWaitTime += (endTime - startTime);
-                    timeWait = timeOut - totalWaitTime;
+                    timeWait = timeOut - (endTime - startTime);
 
-                    flag = this.tryLock(currenSeq, key);
+                    flag = StringUtils.isBlank(preLockKey = tryLock(currenSeq, key, preLockKey));
                     if (!flag) {
-
                         if (timeWait < 0) {
                             return flag;
                         }
@@ -140,8 +137,8 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
             return false;
         } finally {
             try {
-                if (!flag && StringUtils.isBlank(key)) {
-                    zk.delete(key, 1);
+                if (!flag && !StringUtils.isBlank(key)) {
+                    zk.delete(key, -1);
                 }
             } catch (final Exception e) {
                 LOGGER.error("unlock error", e);
@@ -149,31 +146,50 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
         }
     }
 
-    private boolean tryLock(final Long currenSeqv, final String key) throws KeeperException, InterruptedException {
+    /**
+     * 尝试是否能获得锁
+     *
+     * @param currenSeqv 当前锁序列.
+     * @param currentLockKey 当前锁.
+     * @param preKey 上级锁.
+     * @return 返回null 说明可以获得锁，非null 需要等待此锁释放
+     * @throws Exception
+     */
+    private String tryLock(final Long currenSeqv,
+            final String currentLockKey, final String preKey) throws Exception {
         final List<String> keys = zk.getChildren(lockRootPath + "/" + lockPath, false);
         if (keys.size() == 1) {
-            return true;
+            return null;
         }
-        List<Long> seq = new ArrayList<>();
+        final TreeMap<Long, String> map = new TreeMap<>();
         for (String key1 : keys) {
             final long l = Long.parseLong(key1.split("_")[1]);
-            seq.add(l);
+            map.put(l, key1);
         }
-        Collections.sort(seq);
 
-        for (int i = seq.size() - 1; i >= 0; i--) {
+        final Map<Long, String> mm = map.descendingMap();
+        final int size = mm.keySet().size();
+
+        int index = 0;
+        for (Map.Entry<Long, String> entry : mm.entrySet()) {
+            Long key = entry.getKey();
+            String value = entry.getValue();
             //当前的锁为最小锁时--获得锁
-            if (seq.get(i) <= currenSeqv && i == 0) {
-                return true;
+            if (key <= currenSeqv && index == size - 1) {
+                return null;
             }
-            //或取列表中最小锁
-            if (seq.get(i) < currenSeqv) {
-                zk.exists(lockRootPath + "/" + lockPath + "/abc_000000000" + seq.get(i),
-                        new WatcherImpl(zk, key));
-                return false;
+
+            //获取比当前锁序列小的锁
+            if (key < currenSeqv) {
+                if (!StringUtils.equals(value, preKey)) {
+                    zk.exists(lockRootPath + "/" + lockPath + "/" + value,
+                            new WatcherImpl(zk, currentLockKey));
+                }
+                return value;
             }
+            index--;
         }
-        return false;
+        return null;
     }
 
     @Override
