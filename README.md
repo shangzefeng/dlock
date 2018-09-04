@@ -14,7 +14,7 @@
    为了避免未获得锁的节点提前超时释放节点，导致后面的节点获得锁所以再进行2环节，待当前临时节点前置无节点时才能获得锁）
    5. 内部线程清理僵尸临时节点
    
-### zookeeper 实现简化流程图
+#### zookeeper 实现简化流程图
 ![ABC](https://github.com/shangzefeng/dlock/blob/master/image/zookpeer.jpg) 
    
 ### 使用方法
