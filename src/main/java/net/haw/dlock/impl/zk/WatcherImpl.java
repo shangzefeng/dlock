@@ -26,7 +26,8 @@ public class WatcherImpl implements Watcher {
 
     @Override
     public void process(WatchedEvent event) {
-        synchronized(lockId){
+        synchronized (lockId) {
+            System.out.println("notify");
             lockId.notify();
         }
     }
