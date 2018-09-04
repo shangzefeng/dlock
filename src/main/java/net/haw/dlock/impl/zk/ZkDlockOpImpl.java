@@ -5,9 +5,10 @@
  */
 package net.haw.dlock.impl.zk;
 
+import java.io.Closeable;
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import net.haw.dlock.api.DlockOp;
@@ -30,7 +31,7 @@ import org.springframework.beans.factory.InitializingBean;
  * @version 1.0.0
  * @since Aug 31 2017
  */
-public class ZkDlockOpImpl implements DlockOp, InitializingBean {
+public class ZkDlockOpImpl implements DlockOp, InitializingBean, Closeable {
 
     /**
      * Logger.
@@ -40,7 +41,7 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
     /**
      * 锁记录.
      */
-    private final ConcurrentHashMap<String, String> LOCK_MAP = new ConcurrentHashMap();
+    private final ConcurrentHashMap<String, LockResource> LOCK_MAP = new ConcurrentHashMap();
 
     /**
      * zk.
@@ -73,6 +74,11 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
     private int timeout;
 
     /**
+     * 锁占用最大时长ms-- 默认10s.
+     */
+    private static final int MAX_LOCKED_TIME = 10000;
+
+    /**
      * zk实现分布式锁--可重入锁
      *
      * @param lockResource 锁对象.
@@ -90,9 +96,9 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
             final String lockId = threadId + lockResource;
 
             //判断此锁在当前线程是否已被占用
-            if (!StringUtils.isBlank((LOCK_MAP.get(threadId + lockResource)))) {
+            if (!StringUtils.isBlank((getLockPath(lockId)))) {
                 final Stat stat = new Stat();
-                final byte[] data = zk.getData(LOCK_MAP.get(lockId), false, stat);
+                final byte[] data = zk.getData(getLockPath(lockId), false, stat);
                 if (StringUtils.equals(new String(data, "UTF-8"), threadId)) {
                     flag = true;
                     return flag;
@@ -107,19 +113,19 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
                     ZooDefs.Ids.OPEN_ACL_UNSAFE,
                     CreateMode.EPHEMERAL_SEQUENTIAL);
 
-            LOCK_MAP.put(lockId, key);
+            long startTime = System.currentTimeMillis();
+            long endTime = startTime;
+            long timeWait = timeOut > MAX_LOCKED_TIME ? MAX_LOCKED_TIME : timeOut;
+
+            final LockResource resource = new LockResource(key, startTime);
+            LOCK_MAP.put(lockId, resource);
 
             final long currenSeq = Long.parseLong(key.split("_")[1]);
-
-            long startTime = System.currentTimeMillis();
-            long endTime = System.currentTimeMillis();
-            long timeWait = timeOut;
 
             String preLockKey = null;
             synchronized (key) {
                 while (true) {
                     timeWait = timeOut - (endTime - startTime);
-
                     flag = StringUtils.isBlank(preLockKey = tryLock(currenSeq, key, preLockKey));
                     if (!flag) {
                         if (timeWait < 0) {
@@ -138,7 +144,7 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
         } finally {
             try {
                 if (!flag && !StringUtils.isBlank(key)) {
-                    zk.delete(key, -1);
+                    this.del(lockResource);
                 }
             } catch (final Exception e) {
                 LOGGER.error("unlock error", e);
@@ -192,6 +198,11 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
         return null;
     }
 
+    /**
+     * 释放锁.
+     *
+     * @param lockResource 锁资源.
+     */
     @Override
     @SuppressWarnings("CallToPrintStackTrace")
     public void del(final String lockResource) {
@@ -200,11 +211,29 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
         }
         final String lockId = String.valueOf(Thread.currentThread().getId()) + lockResource;
         try {
-            zk.delete(lockId, 1);
-        } catch (Exception e) {
-            e.printStackTrace();
+            final Stat stat = zk.exists(getLockPath(lockId), false);
+            if (null == stat) {
+                return;
+            }
+            zk.delete(getLockPath(lockId), stat.getVersion());
+        } catch (final Exception e) {
+            LOGGER.error("释放锁异常[" + lockResource + "]", e);
         } finally {
             LOCK_MAP.remove(lockId);
+        }
+    }
+
+    @Override
+    public void close() throws IOException {
+        if (null == zk) {
+            return;
+        }
+        try {
+            LOCK_MAP.clear();
+            zk.close();
+            zk = null;
+        } catch (final InterruptedException ex) {
+            LOGGER.error("release resourece exception", ex);
         }
     }
 
@@ -215,14 +244,28 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
 
         @Override
         public void run() {
+            final long expireTime = MAX_LOCKED_TIME * 1000;
             while (true) {
                 try {
+                    final long time = System.currentTimeMillis();
+                    for (Map.Entry<String, LockResource> entry : LOCK_MAP.entrySet()) {
+                        final LockResource value = entry.getValue();
+                        if (null == value || time - value.getTime() < expireTime) {
+                            continue;
+                        }
+                        final Stat stat = zk.exists(entry.getKey(), false);
+                        if (null == stat) {
+                            LOCK_MAP.remove(entry.getKey());
+                            continue;
+                        }
+                        zk.delete(value.getLockKey(), stat.getVersion());
+                        LOCK_MAP.remove(entry.getKey());
+                    }
                     Thread.sleep(1000);
-                } catch (InterruptedException ex) {
+                } catch (final Exception ex) {
                 }
             }
         }
-
     }
 
     @Override
@@ -245,6 +288,29 @@ public class ZkDlockOpImpl implements DlockOp, InitializingBean {
         } catch (final Exception e) {
             throw new RuntimeException("init lock impl error", e);
         }
+    }
+
+    /**
+     * 通过lockId 获取lockPath
+     *
+     * @param lockId
+     * @return
+     * @throws Exception
+     */
+    private String getLockPath(final String lockId) throws Exception {
+        if (StringUtils.isBlank(lockId)) {
+            throw new Exception("lockId is null");
+        }
+
+        if (null == LOCK_MAP.get(lockId)) {
+            throw new Exception("not found lockId [" + lockId + "]");
+        }
+
+        if (StringUtils.isBlank(LOCK_MAP.get(lockId).getLockKey())) {
+            throw new Exception("lockId [" + lockId + "] not found lockPath");
+        }
+
+        return LOCK_MAP.get(lockId).getLockKey();
     }
 
     /**
