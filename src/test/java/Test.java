@@ -2,8 +2,6 @@
 import net.haw.dlock.api.DlockHandlerImpl;
 import net.haw.dlock.impl.redis.RedisDlockOpImpl;
 import net.haw.dlock.impl.zk.ZkDlockOpImpl;
-import org.junit.Before;
-import org.springframework.beans.factory.xml.XmlBeanFactory;
 
 /*
  * To change this license header, choose License Headers in Project Properties.
@@ -22,15 +20,19 @@ public class Test {
 
     public static void zkLock() {
         ZkDlockOpImpl zkDlockOpImpl = new ZkDlockOpImpl();
-        zkDlockOpImpl.setHost("127.0.0.1");
+        zkDlockOpImpl.setHost("192.168.8.106");
         zkDlockOpImpl.setPort(2181);
         zkDlockOpImpl.setTimeout(5000);
         zkDlockOpImpl.afterPropertiesSet();
-        DlockHandlerImpl dlockHandlerImpl = new DlockHandlerImpl(zkDlockOpImpl);
-        if (dlockHandlerImpl.lock("abc", 1000000)) {
+        final DlockHandlerImpl dlockHandlerImpl = new DlockHandlerImpl(zkDlockOpImpl);
+        /*
+        if (dlockHandlerImpl.lock("abc", 2000)) {
             dlockHandlerImpl.unlock("abc");
             System.out.println("100");
+        } else {
+            System.out.println("false");
         }
+         */
     }
 
     public static void redisLock() throws Exception {
