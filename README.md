@@ -1,4 +1,4 @@
-# dlock 基于redis和zookeeper实现分布式锁。
+# dlock 基于redis和zookeeper实现分布式锁
 
 ## redis 实现原理
    由于redis是单线程模型，利用redis的setnx命令抢先占用锁并设置锁的超时时间，若没有取得锁就轮训执行setnx命令重试获得锁。轮询频率以timeOut/10 。
@@ -14,3 +14,8 @@
    为了避免未获得锁的节点提前超时释放节点，导致后面的节点获得锁所以再进行2环节，待当前临时节点前置无节点时才能获得锁）
    5. 内部线程清理僵尸临时节点
    
+### zookeeper 实现简化流程图
+![ABC](https://github.com/shangzefeng/dlock/blob/master/image/zookpeer.jpg) 
+   
+### 使用方法
+    见测试
